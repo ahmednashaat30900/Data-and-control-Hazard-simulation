@@ -1,0 +1,298 @@
+//
+// Project:	DLX V4
+// Entity	Pipeline Display Unit
+// File		pipe_disp.hase
+// Date:	30 Sept 1999
+
+// The Pipeline Display Unit is used to display the instruction
+// at each stage in the pipeline. It mantains its own internal
+// pipeline to keep track of instructions in the execution units.
+
+$class_decls
+
+/* Variables  */
+  sim_entity_id entity[8];
+  t_instrn_reg packet;
+
+  char char_buff[20], print_buff[20];
+  int unit_count, units;
+  int IF_packet_count; 
+  int ID_packet_count; 
+  int MA_packet_count;
+  int WB_packet_count;
+  int j;
+
+
+//classes
+
+char* convert(t_dlx_instrn_set instrn);
+
+$class_defs
+
+char* pipe_disp::convert(t_dlx_instrn_set instrn) {
+	char_buff[0] = '\0';
+	  PutValue(char_buff, instrn);
+
+	for (j=0; j<20; j++)
+	{
+	 if (char_buff[j] == ' ')
+	  {print_buff[j] = '_';}
+	 else
+	  {
+	   print_buff[j] = char_buff[j];
+	    if (char_buff[j] == '\0')
+	     {print_buff[j-1] = '\0';}
+	  }
+	}
+	return print_buff;
+}
+
+$body
+
+// set up entity ids
+  entity[0] = sim.get_entity_id("INSTR_FETCH");
+  entity[1] = sim.get_entity_id("INSTR_DECODE");
+  entity[2] = sim.get_entity_id("INT_EXE_A");
+  entity[3] = sim.get_entity_id("MEM_ACCESS");
+  entity[4] = sim.get_entity_id("WRITE_BACK");
+  entity[5] = sim.get_entity_id("INT_EXE_B");
+
+// collect latency values from Control Box (integer unit always 1)
+
+  unit_count = 0;
+  units = 10;		// number of packets being sent
+  IF_packet_count = 0;
+  ID_packet_count = 0;
+  MA_packet_count = 0;
+  WB_packet_count = 0;
+
+while (1)
+{
+
+  sim_get_next(ev);
+
+// packets from IF
+
+  if ((ev.scheduled_by() == entity[0]) && (IF_packet_count == 0))	
+	// Instruction Fetch, instruction A
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+//	printf("Pipe display received packet from IF count = %d\n",IF_packet_count);
+	if ((packet.status & 1) == 1)
+	  {I_F_1 = packet.instrn;}
+	else
+	 {I_F_1.reset();}
+
+	if (unit_count == units)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+
+	}
+	  IF_packet_count = 1;  // next packet from IF is instruction B
+     }
+
+
+  else if ((ev.scheduled_by() == entity[0]) && (IF_packet_count == 1))
+	// Instruction Fetch, instruction B
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+//	printf("Pipe display received packet from IF  count = %d\n",IF_packet_count);
+	if ((packet.status & 1) == 1)
+	  {I_F_2 = packet.instrn;}
+	else
+	 {I_F_2.reset();}
+
+	if (unit_count == units)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+	  IF_packet_count = 0;  // next packet from IF is instruction A
+     }
+
+// packets from ID
+
+  if ((ev.scheduled_by() == entity[1]) && (ID_packet_count == 0))	
+	// Instruction Decode, instruction A
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+//	printf("Pipe display received packet from ID count = %d\n",ID_packet_count);
+	if ((packet.status & 1) == 1)
+	  {I_D_1 = packet.instrn;}
+	else
+	 {I_D_1.reset();}
+
+	if (unit_count == units)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+
+	}
+	  ID_packet_count = 1;  // next packet from ID is instruction B
+     }
+
+
+  else if ((ev.scheduled_by() == entity[1]) && (ID_packet_count == 1))
+	// Instruction Fetch, instruction B
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+//	printf("Pipe display received packet from ID  count = %d\n",ID_packet_count);
+	if ((packet.status & 1) == 1)
+	  {I_D_2 = packet.instrn;}
+	else
+	 {I_D_2.reset();}
+
+	if (unit_count == units)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+	  ID_packet_count = 0;  // next packet from ID is instruction A
+     }
+
+
+
+  else if (ev.scheduled_by() == entity[2])	// Integer A
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+
+//	printf("Pipe display received packet from EX_A status = %d\n",(packet.status & 1));
+	if ((packet.status  & 1) == 1)
+	 {E_X_1 = packet.instrn;}
+	else
+	 {E_X_1.reset();}
+
+	if (unit_count == units)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+     }
+
+  else if (ev.scheduled_by() == entity[5])	// Integer B
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+
+//	printf("Pipe display received packet from EX_B status = %d\n",(packet.status & 1));
+
+	if ((packet.status  & 1) == 1) // Change back to == 1
+	 {E_X_2 = packet.instrn;}
+	else
+	 {E_X_2.reset();}
+
+	if (unit_count == units)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+     }
+
+  else if ((ev.scheduled_by() == entity[3]) && (MA_packet_count == 0))	
+	// Memory Access, instruction A
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+
+
+	if ((packet.status & 1) == 1)
+	 {M_A_1 = packet.instrn;
+	  sprintf (P1, "%d", ((packet.status & 2) >> 1));
+	 }
+	else
+	 {M_A_1.reset();
+	  strcpy(P1, "-");
+	 }
+
+	if (unit_count == units)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+	MA_packet_count = 1; // next packet if for instruction B
+     }
+
+ else if ((ev.scheduled_by() == entity[3]) && (MA_packet_count == 1))	
+	// Memory Access, instructon B
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+
+
+	if ((packet.status & 1) == 1)
+	 {M_A_2 = packet.instrn;
+	  sprintf (P2, "%d", ((packet.status & 2) >> 1));
+	 }
+	else
+	 {M_A_2.reset();
+	  strcpy(P2, "-");
+	 }
+
+	if (unit_count == units)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+	MA_packet_count = 0; // next packet is for instruction A
+     }
+
+  else if ((ev.scheduled_by() == entity[4]) && (WB_packet_count == 0))	
+	// Write Back, instruction A
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+
+
+	if ((packet.status & 1) == 1)
+	 {W_B_1 = packet.instrn;}
+	else
+	 {W_B_1.reset();}
+
+	if (unit_count == units)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+	WB_packet_count = 1; // next packet if for instruction B
+     }
+
+ else if ((ev.scheduled_by() == entity[4]) && (WB_packet_count == 1))	
+	// Write Back, instructon B
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+
+
+	if ((packet.status & 1) == 1)
+	 {W_B_2 = packet.instrn;}
+	else
+	 {W_B_2.reset();}
+
+	if (unit_count == units)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+	WB_packet_count = 0; // next packet is for instruction A
+     }
+}
+
+
+
+

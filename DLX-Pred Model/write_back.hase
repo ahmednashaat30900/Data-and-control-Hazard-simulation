@@ -1,0 +1,198 @@
+//
+// Project:	DLX V1.1
+// Entity:	Write Back Unit
+// File:	write_back.hase
+// Date:	26 nov 2001
+//
+// The Write Back Unit receives packets from the Memory Access Unit.
+// Whenever a valid packet is received, the Write Back Unit constructs a
+// Register Write Access packet and sends it to the Programmable Registers.  
+// The Programmable Registers are not clocked so no packet needs to be
+// sent if there is no valid instruction in the Write Back Unit.
+// The Registers are assumed to have 2 ports, one for reading and one for
+// writing. To make this work in the simulation, the write back occurs in
+// the second phase of the clock, i.e. after the WAW/RAW checks, which
+// then clear in the next clock cycle.
+
+// V1.1 (Nov 2001) uses the new clock mechanism and uses
+// the sim_from_port predicate to check for a new packet, rather than always
+// receiving a packet. This avoids the need to send untraced packets when
+// there is no valid instruction.
+
+$class_decls
+
+//entity references
+
+  sim_entity_id pipe;
+
+// structures and variables
+  t_write_back_struct InputPacket0, InputPacket1;
+  t_write_back_struct WB_Input_Reg0, WB_Input_Reg1;	// Input Registers
+  t_instrn_reg Instruction0, Instruction1;
+  t_reg_write WB_Output0, WB_Output1;			// Output packets
+
+  char* Dest_reg;
+  char destT;
+  int dest;
+  int data, sign_ext, IncRegNo;
+  int old_state;
+
+$pre
+
+  pipe = sim.get_entity_id("PIPE_DISP");
+
+  my_state = W_VOID;
+  old_state = W_VOID;
+  dump_state();
+
+$phase0
+
+// predicates for use in sim_waiting test
+
+  sim_from_port instr_packet_0(instr_in_0);    
+  sim_from_port instr_packet_1(instr_in_1);    
+
+ // DEAL WITH INPUT
+
+	WB_Input_Reg0.status = 0;	// initialise to non-valid
+	WB_Input_Reg1.status = 0;
+
+	if (sim_waiting(ev, instr_packet_0) > 0)	// Input 0
+	 {
+		  SIM_CAST(t_write_back_struct, InputPacket0, ev);
+
+		WB_Input_Reg0.status = InputPacket0.status;
+		WB_Input_Reg0.instrn = InputPacket0.instrn;
+		WB_Input_Reg0.data   = InputPacket0.data;
+	}
+
+	if (sim_waiting(ev, instr_packet_1) > 0)	// Input 1
+	 {
+		  SIM_CAST(t_write_back_struct, InputPacket1, ev);
+
+		WB_Input_Reg1.status = InputPacket1.status;
+		WB_Input_Reg1.instrn = InputPacket1.instrn;
+		WB_Input_Reg1.data   = InputPacket1.data;
+	}
+// always send packets to Pipeline Display even when held, otherwise Display
+// doesn't work
+
+		Instruction0.status = WB_Input_Reg0.status;
+		Instruction0.instrn = WB_Input_Reg0.instrn;
+		sim_schedule(pipe, 0.0, INSTRUCTION,
+			SIM_PUT(t_instrn_reg, Instruction0));
+
+		Instruction1.status = WB_Input_Reg1.status;
+		Instruction1.instrn = WB_Input_Reg1.instrn;
+		sim_schedule(pipe, 0.0, INSTRUCTION,
+			SIM_PUT(t_instrn_reg, Instruction1));
+
+	if ( ((WB_Input_Reg0.status & 1) == 1)
+	   ||((WB_Input_Reg1.status & 1) == 1))
+	  {my_state = W_BUSY;
+//	   IncRegNo = WB_Input_Reg0.status & 2;	// used in double cycle 
+//	   IncRegNo = IncRegNo >> 1;		// instructions to access
+	  					// second register
+	  }					// !! not used in V4
+	else
+	  {my_state = W_VOID;}
+
+	if (my_state != old_state)
+	  {dump_state();}
+	old_state = my_state;
+
+	// end of ClockPhase = 0
+
+$phase1
+// DEAL WITH OUTPUT
+
+	if ((WB_Input_Reg0.status & 1) == 1)
+  // if input is valid, construct a packet to send to Registers
+
+	 {
+	  WB_Output0.data = WB_Input_Reg0.data;
+  if (WB_Input_Reg0.instrn.decode_LOAD())
+	 {Dest_reg = WB_Input_Reg0.instrn.load_field.dest_reg;
+	  if (WB_Input_Reg0.instrn.function == t_dlx_instrn_set::LH)
+	  {WB_Output0.data = WB_Input_Reg0.data & 65535;
+							// mask high order bits
+	      sign_ext = 0;
+	      if ((WB_Input_Reg0.data & 32768) != 0)
+		{sign_ext = -1 ^ 65535;		// generate sign extension
+	   WB_Output0.data = WB_Output0.data | sign_ext;}
+	  }
+	  else if (WB_Input_Reg0.instrn.function == t_dlx_instrn_set::LHU)
+	  {WB_Output0.data = WB_Input_Reg0.data & 65535;}
+							// mask high order bits
+	 }
+
+  else if (WB_Input_Reg0.instrn.decode_MOVE())
+	{Dest_reg = WB_Input_Reg0.instrn.move_field.dest_reg;}
+
+  else if (WB_Input_Reg0.instrn.decode_ALU())
+	{Dest_reg = WB_Input_Reg0.instrn.alu_field.dest_reg;}
+
+  else if (WB_Input_Reg0.instrn.decode_ALUI())
+	{Dest_reg = WB_Input_Reg0.instrn.alui_field.dest_reg;}
+
+  else if (WB_Input_Reg0.instrn.decode_FLPT())
+	{Dest_reg = WB_Input_Reg0.instrn.alu_field.dest_reg;}
+
+	destT = Decode_Register(Dest_reg).type;
+	dest  = Decode_Register(Dest_reg).number + IncRegNo;
+
+	  if (destT == 'R')	{strcpy(WB_Output0.reg_type, "R");}
+	  else			{strcpy(WB_Output0.reg_type, "F");}
+	  WB_Output0.reg_no =  dest;
+
+	  send_REG_WRITE(to_registers_0, WB_Output0);
+	 }
+
+	if ((WB_Input_Reg1.status & 1) == 1)
+  // if input is valid, construct a packet to send to Registers
+
+	 {
+	  WB_Output1.data = WB_Input_Reg1.data;
+  if (WB_Input_Reg1.instrn.decode_LOAD())
+	 {Dest_reg = WB_Input_Reg1.instrn.load_field.dest_reg;
+	  if (WB_Input_Reg1.instrn.function == t_dlx_instrn_set::LH)
+	  {WB_Output1.data = WB_Input_Reg1.data & 65535;
+							// mask high order bits
+	      sign_ext = 0;
+	      if ((WB_Input_Reg1.data & 32768) != 0)
+		{sign_ext = -1 ^ 65535;		// generate sign extension
+	   WB_Output1.data = WB_Output1.data | sign_ext;}
+	  }
+	  else if (WB_Input_Reg1.instrn.function == t_dlx_instrn_set::LHU)
+	  {WB_Output1.data = WB_Input_Reg1.data & 65535;}
+							// mask high order bits
+	 }
+
+  else if (WB_Input_Reg1.instrn.decode_MOVE())
+	{Dest_reg = WB_Input_Reg1.instrn.move_field.dest_reg;}
+
+  else if (WB_Input_Reg1.instrn.decode_ALU())
+	{Dest_reg = WB_Input_Reg1.instrn.alu_field.dest_reg;}
+
+  else if (WB_Input_Reg1.instrn.decode_ALUI())
+	{Dest_reg = WB_Input_Reg1.instrn.alui_field.dest_reg;}
+
+  else if (WB_Input_Reg1.instrn.decode_FLPT())
+	{Dest_reg = WB_Input_Reg1.instrn.alu_field.dest_reg;}
+
+	destT = Decode_Register(Dest_reg).type;
+	dest  = Decode_Register(Dest_reg).number + IncRegNo;
+
+	  if (destT == 'R')	{strcpy(WB_Output1.reg_type, "R");}
+	  else			{strcpy(WB_Output1.reg_type, "F");}
+	  WB_Output1.reg_no =  dest;
+
+	  send_REG_WRITE(to_registers_1, WB_Output1);
+	 }
+
+	// end of ClockPhase = 1
+
+
+
+
+

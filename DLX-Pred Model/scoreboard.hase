@@ -1,0 +1,332 @@
+//
+// Project:	DLX V4
+// Entity:	Scoreboard
+// File:	scoreboard.hase
+// Date:	29 Dec 2002
+//
+
+// This is the scoreboard code used in DLX V2.2, modified first for use with
+// DLX V1 which only has one (integer) execution unit. Thus there can be
+// no structural or control hazards, so much of the code in this file is
+// never used. However, rather than make major changes, only essential changes
+// have been made, i.e. commenting out the prints statements for these two
+// hazards. The scoreboard icon for V1 says "Data Hazards" at the top
+// and only displays WAW, RAW1 and RAW2. The remaining comments here are
+// taken from V2.2.
+
+// V4 has two integer units.
+
+// The Scoreboard checks for structural and control hazards and displays
+// data hazards. CheckDHazFree checks for Structural Hazards, i.e. the
+// execution units are unable to accept a new instruction because another
+// would complete at the same time and for Control Hazards, i.e. a branch
+// cannot enter the Integer Unit if there is any instruction in the
+// execution units which it could overtake.
+// SB keeps a latencyQ into which the latency  of each new instruction
+// is entered as it is issued. On a function call the Q entries move along
+// and are decremented by 1 as they go, until they reach 0, at which point
+// the instruction will complete. Structural hazards are detected by
+// indexing into the Q using the latency of the incoming instruction
+// and checking the value in the Q against the index. If 0, the new
+// instruction would comlete at the same time as one in the units, and
+// so must wait a cycle before being issued. 
+
+// Data hazards (WAW, RAW) are detected by the Instruction Decode Unit,
+// which invokes classes in the Scoreboard to drive the display.
+
+// Feb 2002: Display method added, invoked by ID to cause dump_state
+
+$class_decls
+
+  int interrupt;
+  int i;		// general count variable
+
+//structures
+
+  t_dlx_instrn_set Instruction;
+
+// latency variables 
+
+  int latency, intl, fltl, mull, divl, maxl;	//latencies
+  int latencyQ[8];	// set to likely maximum required
+  int Any[8];		// accumulates remaining latency values
+			// Any[0] is set if any latency value >0 is left in Q
+  int stop;
+
+// variable setting/resetting functions
+
+  void setWAW_A( char destT, int dest);		// display only
+  void resetWAW_A( );
+  void setRAW1_A( char typ1, int src1 );
+  void resetRAW1_A( );
+  void setRAW2_A( char typ2, int src2 );
+  void resetRAW2_A( );
+
+  void setWAW_B( char destT, int dest);		// display only
+  void resetWAW_B( );
+  void setRAW1_B( char typ1, int src1 );
+  void resetRAW1_B( );
+  void setRAW2_B( char typ2, int src2 );
+  void resetRAW2_B( );
+
+  void setStrucHaz( int x );
+  void setContHaz( int x );
+  void clearHaz_A( );
+  void clearHaz_B( );
+  void Display();
+
+  int CheckHazards(t_instrn_reg Instrn);
+
+  void setInterrupt( int x ) { interrupt = x; };
+  int Stop( void ) { return stop; };
+
+$class_defs
+
+
+int scoreboard::CheckHazards(t_instrn_reg Instrn)
+
+{
+  int haz;
+
+// work out new latency value
+
+  if ((Instrn.instrn.function == t_dlx_instrn_set::DIV)
+	|| (Instrn.instrn.function == t_dlx_instrn_set::DIVF))		{latency = divl;}
+
+  else if ((Instrn.instrn.function == t_dlx_instrn_set::MULT)
+	|| (Instrn.instrn.function == t_dlx_instrn_set::MULTF))		{latency = mull;}
+
+  else if ( (Instrn.instrn.function == t_dlx_instrn_set::ADDF)
+         || (Instrn.instrn.function == t_dlx_instrn_set::SUBF)
+	 || (Instrn.instrn.decode_COMP()))		{latency = fltl;}
+
+  else							{latency = 1;}
+
+// set latency = 0 if instruction can't issue
+
+  if ((Instrn.status & 1) == 0)				{latency = 0;}
+//	printf("SB: new latency = %d\n", latency);
+
+// move latencyQ values and check contents
+
+  for ( i=0; i<maxl; i++)	// clear Any values to 0
+   {
+    Any[i] = 0;
+   }
+
+	for ( i=maxl-1; i>=1; i--)
+	{
+	latencyQ[i] = latencyQ[i-1] - 1;
+	if (latencyQ[i] == 7)
+	  {Any[7] = 1;}
+	if (latencyQ[i] == 6)
+	  {Any[6] = 1;}
+	if (latencyQ[i] == 5)
+	  {Any[5] = 1;}
+	if (latencyQ[i] == 4)
+	  {Any[4] = 1;}
+	if (latencyQ[i] == 3)
+	  {Any[3] = 1;}
+	if (latencyQ[i] == 2)
+	  {Any[2] = 1;}
+	if (latencyQ[i] == 1)
+	  {Any[1] = 1;}
+	if (latencyQ[i] >= 1)
+	  {Any[0] = 1;}
+
+// The following two instructions can be useful for debugging
+//	printf("SB: latency %d = %d \n", i, latencyQ[i]);
+//	printf("SB: Any = %d \n", Any[0]);
+	}
+// Set free = 0 if there is a latency value in the Q equal to the
+// new latency (unless it's 0) or if the instruction is a branch and
+// there is any non-zero latency in the Q
+
+   if  ((latency != 0) && (Any[latency] == 1))
+	{
+	haz = 1;			// data hazard -  can't issue
+	}
+	else
+	{
+	 haz = 0;			// i.e. can issue
+	}
+
+   if  (  ((Instrn.status & 1) != 0) 
+	 && 	(   Instrn.instrn.decode_JIMM()
+		 || Instrn.instrn.decode_JREG()
+		 || Instrn.instrn.decode_BRNC()
+		 || Instrn.instrn.decode_BFP()
+		)
+           && (Any[0] == 1)
+	)
+	{haz = haz + 2;}			// control hazard - can't issue
+
+// insert new latency value into latencyQ
+
+	latencyQ[0] = latency;
+//	printf("new latencyQ value = %d \n", latency);
+
+	return haz;
+}
+
+//Channel A
+
+void scoreboard::setWAW_A(char destT, int dest )
+{
+	if (destT == 'R')
+	{sprintf(WAW_A, "R%d", dest);}
+	else
+	{sprintf(WAW_A, "F%d", dest);}
+}
+
+void scoreboard::resetWAW_A( )
+{
+	strcpy(WAW_A,"---");
+}
+
+void scoreboard::setRAW1_A(char typ1, int src1)
+{
+	if (typ1 == 'R')
+	{sprintf(RAW1_A, "R%d", src1);}
+	else
+	{sprintf(RAW1_A, "F%d", src1);}
+}
+
+void scoreboard::resetRAW1_A()
+{
+	strcpy(RAW1_A,"---");
+}
+
+void scoreboard::setRAW2_A(char typ2, int src2)
+{
+	if (typ2 == 'R')
+	{sprintf(RAW2_A, "R%d", src2);}
+	else
+	{sprintf(RAW2_A, "F%d", src2);}
+}
+
+void scoreboard::resetRAW2_A()
+{
+	strcpy(RAW2_A,"---");
+}
+
+// Channel B
+
+void scoreboard::setWAW_B(char destT, int dest )
+{
+	if (destT == 'R')
+	{sprintf(WAW_B, "R%d", dest);}
+	else
+	{sprintf(WAW_B, "F%d", dest);}
+}
+
+void scoreboard::resetWAW_B( )
+{
+	strcpy(WAW_B,"---");
+}
+
+void scoreboard::setRAW1_B(char typ1, int src1)
+{
+	if (typ1 == 'R')
+	{sprintf(RAW1_B, "R%d", src1);}
+	else
+	{sprintf(RAW1_B, "F%d", src1);}
+}
+
+void scoreboard::resetRAW1_B()
+{
+	strcpy(RAW1_B,"---");
+}
+
+void scoreboard::setRAW2_B(char typ2, int src2)
+{
+	if (typ2 == 'R')
+	{sprintf(RAW2_B, "R%d", src2);}
+	else
+	{sprintf(RAW2_B, "F%d", src2);}
+}
+
+void scoreboard::resetRAW2_B()
+{
+	strcpy(RAW2_B,"---");
+}
+
+void scoreboard::setStrucHaz( int x )		// not used in v1
+{
+//  if ( x == 0 )
+//	{strcpy(SHz,"---");}
+//  else if ( x == 1 )
+//	{strcpy(SHz,"<<<");}
+}
+
+void scoreboard::setContHaz( int x )		// not used in v1
+{
+//  if ( x == 0 )
+//	{strcpy(CHz,"---");}
+//  else if ( x == 1 )
+//	{strcpy(CHz,"<<<");}
+//	dump_state_i();
+}
+
+void scoreboard::clearHaz_A()
+{
+//	IDHaz = 0;
+	strcpy(WAW_A,"---");
+	strcpy(RAW1_A,"---");
+	strcpy(RAW2_A,"---");
+//	strcpy(SHz,"---");			// not used in v1
+//	strcpy(CHz,"---");
+	dump_state();
+}
+
+void scoreboard::clearHaz_B()
+{
+//	IDHaz = 0;
+	strcpy(WAW_B,"---");
+	strcpy(RAW1_B,"---");
+	strcpy(RAW2_B,"---");
+//	strcpy(SHz,"---");			// not used in v1
+//	strcpy(CHz,"---");
+	dump_state();
+}
+
+void scoreboard::Display()
+{
+dump_state();
+//printf("SB: executing Display\n");
+}
+
+$body
+
+
+// extract latency values
+ intl = 1;
+ maxl = 8;
+
+for ( i=0; i<maxl; i++)	// initialise latency Q and Any values to 0
+{
+  latencyQ[i] = 0;
+}
+
+
+strcpy(WAW_A,"---");
+strcpy(RAW1_A,"---");
+strcpy(RAW2_A,"---");
+strcpy(WAW_B,"---");
+strcpy(RAW1_B,"---");
+strcpy(RAW2_B,"---");
+//strcpy(SHz,"---");
+//strcpy(CHz,"---");
+dump_state();
+
+
+
+
+
+
+
+
+
+
+
+

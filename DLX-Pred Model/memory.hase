@@ -1,0 +1,402 @@
+
+// Project:	DLX V4.2
+// Entity	Memory
+// File:	memory.hase
+// Date:	Feb 2006
+
+// The Memory Unit contains two RARRAYs: instr_mem and data_mem.
+// These are separate because instructions are held in readable (string)
+// form for visualisation purposes.
+// It receives instruction requests from the Instruction Fetch Unit
+// and Read/Write requests from the Memory Access Unit.
+// Requests are processed in ClockPhase 0 and returned 
+// in a subsequent ClockPhase 1, depending on the Access Time parameter.
+// Multi-cycle access times are implemented via a pipeline. This allows
+// for the possibility of modelling memory interleaving, giving the
+// potential to handle one access per clock even when the access time is
+// several clocks.
+
+// The Memory Unit checks for invalid access types and invalid addresses.
+// It does not currently prioritise requests.
+// This version updated to include byte address as well as data in each word
+
+
+$class_decls
+
+//structures and variables
+  t_i_mem_access InstrMemRequest;
+  t_instrn_reg InstrOutputBufferA[8];
+  t_instrn_reg InstrOutputBufferB[8];
+  t_d_mem_access DataMemRequest;
+  data_mem_word DataMemBuffer;
+  t_exe_rslt DataOutputBuffer_0[8], DataOutputBuffer_1[8];
+
+  bool d_address_error, i_address_error;
+
+//half word and byte masks
+  int hword0_mask;
+  int hword1_mask;
+  int byte0_mask;
+  int byte1_mask;
+  int byte2_mask;
+  int byte3_mask;
+  int byte_sign1;
+
+  int AnyI;
+  int AnyD;
+
+  int i_state;		// these state values are used to deal with
+  int old_i_state;	// the differing states of the instruction
+  int d_state;		// and data memories
+  int old_d_state;
+  int set_i_busy;
+  int set_d_busy;
+
+  int Mem_Output_Data;
+  int WriteWord;
+  int j;
+
+  int BufferUpdate(int WriteBuffer);
+
+$class_defs
+
+int memory::BufferUpdate(int WriteBuffer)
+{
+
+	   if ((DataMemRequest.status & 60) == 32)	// write to byte 0
+	    {
+		WriteBuffer = WriteBuffer & (-1 ^ byte0_mask);
+		WriteBuffer = WriteBuffer |
+					(DataMemRequest.data & byte0_mask);
+		}
+	else if ((DataMemRequest.status & 60) == 16)	// write to byte 1
+		{
+		WriteBuffer = WriteBuffer & (-1 ^ byte1_mask);
+		WriteBuffer = WriteBuffer |
+					(DataMemRequest.data & byte1_mask);
+		}
+	else if ((DataMemRequest.status & 60) == 8)	// write to byte 2
+		{
+		WriteBuffer = WriteBuffer & (-1 ^ byte2_mask);
+		WriteBuffer = WriteBuffer |
+					(DataMemRequest.data & byte2_mask);
+		}
+	else if ((DataMemRequest.status & 60) == 4)	// write to byte 3
+		{
+		WriteBuffer = WriteBuffer & (-1 ^ byte3_mask);
+		WriteBuffer = WriteBuffer |
+					(DataMemRequest.data & byte3_mask);
+		}
+	else if ((DataMemRequest.status & 60) == 48)	// write to hword 0
+		{
+		WriteBuffer = WriteBuffer & hword1_mask;
+		WriteBuffer = WriteBuffer |
+					(DataMemRequest.data & hword0_mask);
+		}
+	else if ((DataMemRequest.status & 60) == 12)	// write to hword 1
+		{
+		WriteBuffer = WriteBuffer & hword0_mask;
+		WriteBuffer = WriteBuffer |
+					(DataMemRequest.data & hword1_mask);
+		}
+	else if ((DataMemRequest.status & 60) == 60)	// write to word
+		{WriteBuffer = DataMemRequest.data;}
+	return WriteBuffer;
+}
+
+$pre
+
+  d_address_error = false;
+  i_address_error = false;
+
+//half word and byte masks
+  hword0_mask = -1 ^ 65535;		// 11111111 11111111 00000000 00000000
+  hword1_mask = 65535;			// 00000000 00000000 11111111 11111111
+  byte0_mask = -1 ^ 16777215;		// 11111111 00000000 00000000 00000000
+  byte1_mask = 16777215 ^ 65535;	// 00000000 11111111 00000000 00000000
+  byte2_mask = 65535 ^ 255;		// 00000000 00000000 11111111 00000000
+  byte3_mask = 255;			// 00000000 00000000 00000000 11111111
+  byte_sign1 = -1 ^ 255;		// 11111111 11111111 11111111 00000000
+
+  AnyI = 0;
+  AnyD = 0;
+
+  my_state = M_IDLE;
+  i_state = 0;		// these state values are used to deal with
+  old_i_state = M_IDLE;	// the differing states of the instruction
+  d_state = 0;		// and data memories
+  old_d_state = M_IDLE;
+  set_i_busy = 0;
+  set_d_busy = 0;
+
+	strcpy (DATA, "IDLE");
+	strcpy (INSTRUCTION, "IDLE");
+	dump_state();
+
+$phase0
+
+// predicates for use in sim_wait tests
+
+  sim_from_port i_access(instr_request);	    
+  sim_from_port d_access_0(data_request_0);
+  sim_from_port d_access_1(data_request_1);
+	// PROGRESS PIPELINES AND CHECK FOR VALID REQUESTS
+
+	AnyI = 0;	// initialise valid instruction request flag
+	AnyD = 0;	// initialise valid data request flag
+
+	for (j=(accesstime - 1); j>=1; j--)
+	 {
+	  InstrOutputBufferA[j].status = InstrOutputBufferA[j-1].status;
+	  InstrOutputBufferB[j].status = InstrOutputBufferB[j-1].status;
+		if ((InstrOutputBufferA[j-1].status & 1) == 1)
+		{AnyI = 1;}	// set instruction request flag to 1
+	  InstrOutputBufferA[j].instrn = InstrOutputBufferA[j-1].instrn;
+	  InstrOutputBufferB[j].instrn = InstrOutputBufferB[j-1].instrn;
+	 }
+
+	for (j=(accesstime - 1); j>=1; j--)
+	 {
+	  DataOutputBuffer_0[j].status = DataOutputBuffer_0[j-1].status;
+		if ((DataOutputBuffer_0[j-1].status & 1) == 1)
+		{AnyD = 1;}	// set data request flag to 1
+	  DataOutputBuffer_0[j].data = DataOutputBuffer_0[j-1].data;
+	 }
+
+	for (j=(accesstime - 1); j>=1; j--)
+	 {
+	  DataOutputBuffer_1[j].status = DataOutputBuffer_1[j-1].status;
+		if ((DataOutputBuffer_1[j-1].status & 1) == 1)
+		{AnyD = 1;}	// set data request flag to 1
+	  DataOutputBuffer_1[j].data = DataOutputBuffer_1[j-1].data;
+	 }
+
+  InstrOutputBufferA[0].status = 0; // set pipeline 0 stages non-valid -
+  DataOutputBuffer_0[0].status = 0; // will be set valid if there is a request
+  DataOutputBuffer_1[0].status = 0; 
+
+	 if ((sim_waiting(i_access) > 0) && (AnyI == 0))
+	  {		// instruction request -  access Instruction Memory
+	   sim_select(i_access, ev);
+	   SIM_CAST(t_i_mem_access, InstrMemRequest, ev);
+  	   set_i_busy = 1;
+	   strcpy (INSTRUCTION, "READ");
+
+
+	   int addr = instr_mem.process(InstrMemRequest.addr.label, InstrMemRequest.addr.offset);
+	   if ((addr + 1) < I_Mem_Size) {
+
+	    	InstrOutputBufferA[0].instrn = instr_mem[addr];
+	       	InstrOutputBufferA[0].status = InstrMemRequest.status | 1;
+
+// DLX-Pred fetches the second instruction of the pair
+	    	InstrOutputBufferB[0].instrn = instr_mem[addr + 1];
+	       	InstrOutputBufferB[0].status = InstrMemRequest.status | 1;
+		// status bits are simply copied through to output
+		// apart from bit 31 which is set to 1 (= Valid in processor)
+		if ((is_a_function(InstrOutputBufferA[0].instrn) == 0)
+                 ||(is_a_function(InstrOutputBufferB[0].instrn) == 0))
+		 {
+		  InstrOutputBufferA[0].status = 0;
+		  InstrOutputBufferB[0].status = 0;
+		  stopSimulation(-1);	// unimplemented function
+		 }
+	   } else {
+		InstrOutputBufferA[0].status = 0;
+		InstrOutputBufferB[0].status = 0;
+		i_address_error = true;
+		stopSimulation(0);	// Invalid instruction memory address
+	   }
+	}
+
+	 if (sim_waiting(d_access_0) > 0)
+	  {		// data request from input 0 -  access Data Memory
+	   sim_select(d_access_0, ev);
+	   SIM_CAST(t_d_mem_access, DataMemRequest, ev);
+
+	   if ((DataMemRequest.status & 1) == 0)		// read request
+ 	   {
+  	    set_d_busy = 1;
+	    strcpy (DATA, "READ");
+
+		if (DataMemRequest.address < D_Mem_Size)
+		 {
+		  DataMemBuffer.data = data_mem[DataMemRequest.address].data;
+		  DataOutputBuffer_0[0].data = DataMemBuffer.data;
+		  DataOutputBuffer_0[0].status = DataMemRequest.status | 1;
+		// status bits are simply copied through to output
+		// apart from bit 31 which is set to 1 (= Valid in processor)
+		 }
+		else
+		 {
+		  DataMemBuffer.data = 0;
+		  d_address_error = true;
+		  stopSimulation(0);	// Invalid read data memory address
+		 }
+	    }
+
+	    if ((DataMemRequest.status & 1) == 1)	// write request
+	   {
+
+	// To allow SB and SH to update a byte or a half word, data is read
+	// from memory and loaded into MemBuffer.  The data is sent from the
+	// MA unit in the correct position for writing, and type bits 2-5
+	// indicate which bytes are to be updated. Except in the case of a
+	// full word write, these bytes are set to zero and the new data
+	// then ORed into MemBuffer. MemBuffer is then written back to memory.
+
+  	    set_d_busy = 1;
+	    strcpy(DATA, "WRITE");
+
+	 if (DataMemRequest.address < D_Mem_Size)
+	  {
+	   DataOutputBuffer_0[0].data = 0;
+	   DataOutputBuffer_0[0].status = 3;
+	   DataMemBuffer.data = data_mem[DataMemRequest.address].data;
+	   DataMemBuffer.data = BufferUpdate(DataMemBuffer.data);
+
+	   data_mem.Update(DataMemRequest.address, DataMemBuffer);
+		// update memory & screen
+
+	    }	// closes valid request
+		 else
+		  {
+		   d_address_error = true;
+		   stopSimulation(0); // Invalid write data memory address
+		  }
+	  }	// closes write request
+	}	// closes data request from data input 0
+
+	 if (sim_waiting(d_access_1) > 0)
+	  {		// data request from input 1 -  access Data Memory
+	   sim_select(d_access_1, ev);
+	   SIM_CAST(t_d_mem_access, DataMemRequest, ev);
+
+	   if ((DataMemRequest.status & 1) == 0)		// read request
+ 	   {
+  	    set_d_busy = 1;
+	    strcpy (DATA, "READ");
+
+		if (DataMemRequest.address < D_Mem_Size)
+		 {
+		  DataMemBuffer.data = data_mem[DataMemRequest.address].data;
+		  DataOutputBuffer_1[0].data = DataMemBuffer.data;
+		  DataOutputBuffer_1[0].status = DataMemRequest.status | 1;
+		// status bits are simply copied through to output
+		// apart from bit 31 which is set to 1 (= Valid in processor)
+		 }
+		else
+		 {
+		  DataMemBuffer.data = 0;
+		  d_address_error = true;
+		  stopSimulation(0);	// Invalid read data memory address
+		 }
+	    }
+
+	    if ((DataMemRequest.status & 1) == 1)	// write request
+	   {
+
+	// To allow SB and SH to update a byte or a half word, data is read
+	// from memory and loaded into MemBuffer.  The data is sent from the
+	// MA unit in the correct position for writing, and type bits 2-5
+	// indicate which bytes are to be updated. Except in the case of a
+	// full word write, these bytes are set to zero and the new data
+	// then ORed into MemBuffer. MemBuffer is then written back to memory.
+
+  	    set_d_busy = 1;
+	    strcpy(DATA, "WRITE");
+
+	 if (DataMemRequest.address < D_Mem_Size)
+	  {
+	   DataOutputBuffer_1[0].data = 0;
+	   DataOutputBuffer_1[0].status = 3;
+	   DataMemBuffer.data = data_mem[DataMemRequest.address].data;
+	   DataMemBuffer.data = BufferUpdate(DataMemBuffer.data);
+
+	   data_mem.Update(DataMemRequest.address, DataMemBuffer);
+		// update memory & screen
+
+	    }	// closes valid request
+		 else
+		  {
+		   d_address_error = true;
+		   stopSimulation(0); // Invalid write data memory address
+		  }
+	  }	// closes write request
+	}	// closes data request from data input 1
+
+// set states
+	i_state = 0;
+	if ((set_i_busy == 1) || (AnyI == 1))
+	 {i_state = 1;
+	  set_i_busy = 0;}
+	if (i_state == 0)
+	{strcpy (INSTRUCTION, "IDLE");}
+
+	d_state = 0;
+	if ((set_d_busy == 1) || (AnyD == 1))
+	 {d_state = 1;
+	  set_d_busy = 0;}
+	if (d_state == 0)
+	{strcpy (DATA, "IDLE");}
+
+	my_state = M_IDLE;
+	if ((i_state == 1) || (d_state == 1))
+	 {my_state = M_BUSY;}
+	if (i_state != old_i_state)
+	 {dump_state();
+	  old_i_state = i_state;
+	 }
+	if (d_state != old_d_state)
+	 {dump_state();
+	  old_d_state = d_state;
+	 }
+		// end of ClockPhase 0
+
+$phase1
+// Instruction access
+	  if ((InstrOutputBufferA[accesstime - 1].status & 1) == 1)
+				// send instruction to IF
+	  {
+	   send_MEM_INSTR(instr_out_0, InstrOutputBufferA[accesstime -1]);
+	   sim_hold(1);
+	   send_MEM_INSTR(instr_out_1, InstrOutputBufferB[accesstime -1]);
+	  }
+
+// Data access 0
+	  if ((DataOutputBuffer_0[accesstime - 1].status & 3) == 1)
+						// send data to MA
+	  {
+	   send_MEM_DATA(data_out_0, DataOutputBuffer_0[accesstime-1]);
+	  }
+
+	  if ((DataOutputBuffer_0[accesstime - 1].status & 3) == 3)
+						// send ack to MA
+	  {
+	   send_MEM_DATA(data_out_0, DataOutputBuffer_0[accesstime-1]);
+	  }
+
+// Data access 1
+	   sim_hold(1);
+	  if ((DataOutputBuffer_1[accesstime - 1].status & 3) == 1)
+						// send data to MA
+	  {
+	   send_MEM_DATA(data_out_1, DataOutputBuffer_1[accesstime-1]);
+	  }
+
+	  if ((DataOutputBuffer_1[accesstime - 1].status & 3) == 3)
+						// send ack to MA
+	  {
+	   send_MEM_DATA(data_out_1, DataOutputBuffer_1[accesstime-1]);
+	  }
+
+	 	// end of ClockPhase 1
+
+$report
+
+  if(d_address_error)
+   {printf("Simulation aborted: invalid data memory address\n");}
+
+  if(i_address_error)
+   {printf("Simulation aborted: invalid instruction memory address\n");}
+
